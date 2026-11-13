@@ -3,6 +3,12 @@ project(libslic3r_gui)
 
 include(PrecompiledHeader)
 
+if (WIN32)
+    # Match the static Expat used by the core 3MF/AMF parsers in this local build.
+    set_property(SOURCE GUI/SkipPartCanvas.cpp APPEND PROPERTY COMPILE_DEFINITIONS XML_STATIC)
+endif()
+
+
 set(SLIC3R_GUI_SOURCES
     GUI/Widgets/AnimaController.hpp
     GUI/Widgets/AnimaController.cpp
@@ -805,6 +811,7 @@ set(SLIC3R_GUI_SOURCES
     Utils/QidiPrinterAgent.hpp
     Utils/SnapmakerPrinterAgent.cpp
     Utils/SnapmakerPrinterAgent.hpp
+    Utils/SnapmakerProtocol.hpp
     Utils/MoonrakerPrinterAgent.cpp
     Utils/MoonrakerPrinterAgent.hpp
     Utils/Moonraker.cpp
