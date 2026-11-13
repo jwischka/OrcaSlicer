@@ -1,0 +1,59 @@
+name: Export U1 ARM64 development dependencies
+
+on:
+  push:
+    branches: [build/u1-loaded-filament-preview]
+    paths: [.github/workflows/u1_local_deps.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  wait_for_cache:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    outputs:
+      key: ${{ steps.wait.outputs.key }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: deps
+      - name: Wait for the ARM64 build to cache its dependencies
+        id: wait
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_KEY: windows-arm64-clang-cache-orcaslicer_deps-build-${{ hashFiles('deps/**') }}
+        shell: bash
+        run: |
+          echo "key=$CACHE_KEY" >> "$GITHUB_OUTPUT"
+          for attempt in $(seq 1 90); do
+            count=$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?ref=$GITHUB_REF&key=$CACHE_KEY" --jq .total_count)
+            if [ "$count" -gt 0 ]; then exit 0; fi
+            echo "Dependencies are still building (check $attempt/90)."
+            sleep 60
+          done
+          echo "The dependency cache did not appear."
+          exit 1
+  export:
+    needs: wait_for_cache
+    runs-on: windows-11-vs2026-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: deps
+      - uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}/deps/build-arm64/OrcaSlicer_dep
+          key: ${{ needs.wait_for_cache.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Package dependencies for local development
+        shell: pwsh
+        run: tar -czf OrcaSlicer-deps-arm64.tar.gz -C deps/build-arm64 OrcaSlicer_dep
+      - uses: actions/upload-artifact@v7
+        with:
+          name: OrcaSlicer-deps-arm64
+          path: OrcaSlicer-deps-arm64.tar.gz
+          retention-days: 14
+          if-no-files-found: error

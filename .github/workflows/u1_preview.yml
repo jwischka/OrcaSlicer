@@ -3,6 +3,7 @@ name: U1 Windows ARM64 preview
 on:
   push:
     branches: [build/u1-loaded-filament-preview]
+    paths: ["src/**", "tests/**", "deps/**"]
   workflow_dispatch:
 
 permissions:
