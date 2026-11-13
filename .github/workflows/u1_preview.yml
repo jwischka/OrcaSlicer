@@ -1,0 +1,27 @@
+name: U1 Windows ARM64 preview
+
+on:
+  push:
+    branches: [build/u1-loaded-filament-preview]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  id-token: write
+
+jobs:
+  build:
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: windows-11-vs2026-arm
+      arch: arm64
+      compiler: clang
+      build-deps-only: false
+  tests:
+    needs: build
+    uses: ./.github/workflows/unit_tests.yml
+    with:
+      os: windows-11-vs2026-arm
+      artifact: ${{ github.sha }}-tests-windows-arm64
+      test-dir: build-arm64/tests
