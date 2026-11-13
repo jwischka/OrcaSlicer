@@ -12,7 +12,8 @@ permissions:
 
 jobs:
   wait_for_cache:
-    runs-on: ubuntu-24.04
+    # Match the Windows checkout line endings used by the cache-key calculation.
+    runs-on: windows-11-vs2026-arm
     timeout-minutes: 100
     outputs:
       key: ${{ steps.wait.outputs.key }}
