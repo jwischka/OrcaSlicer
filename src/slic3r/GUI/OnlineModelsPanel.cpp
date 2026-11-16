@@ -20,6 +20,15 @@
 #include "libslic3r/Utils.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
+#include "Jobs/Job.hpp"
+#include "Jobs/Worker.hpp"
+#include "slic3r/Utils/CloudProvider.hpp"
+#include "slic3r/Utils/Http.hpp"
+#include "slic3r/Utils/ICloudServiceAgent.hpp"
+#include "slic3r/Utils/NetworkAgent.hpp"
+#include <exception>
+#include <memory>
+#include <wx/weakref.h>
 #include "GUI_Utils.hpp"
 #include "I18N.hpp"
 #include "MsgDialog.hpp"
@@ -81,6 +90,19 @@ bool is_safe_external_url(const wxString& url)
     const wxURI uri(url);
     const wxString scheme = uri.GetScheme().Lower();
     return (scheme == "https" || scheme == "http") && !uri.GetServer().empty();
+}
+
+// Only send sign-in tickets to MakerWorld's exact HTTPS origin, never to a
+// custom source, a lookalike hostname, or a URL supplied by page JavaScript.
+std::string makerworld_origin(const std::string& url)
+{
+    const wxURI uri(from_u8(url));
+    const wxString host = uri.GetServer().Lower();
+    if (uri.GetScheme().Lower() != "https" || !uri.GetUserInfo().empty()
+        || (!uri.GetPort().empty() && uri.GetPort() != "443")
+        || (host != "makerworld.com" && host != "makerworld.cn"))
+        return {};
+    return "https://" + into_u8(host) + "/";
 }
 
 class SourceEditDialog final : public DPIDialog
@@ -385,6 +407,11 @@ void OnlineModelsPanel::create_ui()
     m_manage_sources_button = make_icon_button(m_toolbar, "settings", _L("Manage sources"));
     m_buttons.push_back(m_manage_sources_button);
     toolbar_sizer->Add(m_manage_sources_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, control_gap);
+    m_sign_in_button = make_action_button(m_toolbar, _L("Sign in to MakerWorld"), "");
+    m_sign_in_button->SetToolTip(_L("Use your Bambu account to sign in to MakerWorld."));
+    m_sign_in_button->Hide();
+    m_buttons.push_back(m_sign_in_button);
+    toolbar_sizer->Add(m_sign_in_button, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, control_gap);
     toolbar_sizer->AddStretchSpacer();
 
     m_downloads_button = make_icon_button(m_toolbar, "monitor_tasklist_print", _L("Downloads"));
@@ -402,7 +429,8 @@ void OnlineModelsPanel::create_ui()
     m_toolbar->SetSizer(toolbar_sizer);
     main_sizer->Add(m_toolbar, 0, wxEXPAND | wxALL, toolbar_padding);
 
-    m_browser = WebView::CreateWebView(this, wxEmptyString);
+    // MakerWorld hides account navigation in its Bambu Studio app layout.
+    m_browser = WebView::CreateWebView(this, wxEmptyString, false);
     if (m_browser)
         main_sizer->Add(m_browser, 1, wxEXPAND);
 
@@ -458,6 +486,7 @@ void OnlineModelsPanel::create_ui()
             m_browser->Reload();
     });
     external->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { on_open_external(); });
+    m_sign_in_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { on_makerworld_sign_in(); });
     m_manage_sources_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { on_manage_sources(); });
     empty_add->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { on_manage_sources(); });
     m_downloads_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { show_download_popup(); });
@@ -470,6 +499,11 @@ void OnlineModelsPanel::create_ui()
     });
 
     if (m_browser) {
+        // External pages must not reach the enclosing Home panel's privileged
+        // script-message handlers. Account sign-in is an explicit native action.
+        m_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, [](wxWebViewEvent& event) {
+            event.StopPropagation();
+        });
         auto update_navigation = [this](wxWebViewEvent& event) {
             update_navigation_buttons();
             // The enclosing Home panel has its own WebView handlers.
@@ -547,6 +581,7 @@ void OnlineModelsPanel::refresh_provider_controls(const std::string& preferred_i
     if (m_empty_state)
         m_empty_state->Show(!available);
     if (!available) {
+        m_sign_in_button->Hide();
         m_current_provider = 0;
         update_navigation_buttons();
         Layout();
@@ -564,7 +599,10 @@ void OnlineModelsPanel::update_toolbar_for_width(int width)
 {
     if (!m_toolbar || width <= 0)
         return;
-    const bool compact = width < FromDIP(680);
+    const bool makerworld = m_current_provider < m_providers.size()
+        && !makerworld_origin(m_providers[m_current_provider].homepage_url).empty();
+    const bool compact = width < FromDIP(makerworld ? 880 : 680);
+    m_sign_in_button->Show(makerworld && !compact);
     m_manage_sources_button->Show(!compact);
     m_show_folder_button->Show(!compact);
     m_import_button->Show(!compact);
@@ -578,6 +616,13 @@ void OnlineModelsPanel::show_overflow_menu()
     const int manage_id = wxWindow::NewControlId();
     const int folder_id = wxWindow::NewControlId();
     const int import_id = wxWindow::NewControlId();
+    if (m_current_provider < m_providers.size()
+        && !makerworld_origin(m_providers[m_current_provider].homepage_url).empty()) {
+        const int sign_in_id = wxWindow::NewControlId();
+        menu.Append(sign_in_id, _L("Sign in to MakerWorld"));
+        menu.Enable(sign_in_id, !m_sign_in_pending);
+        menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) { on_makerworld_sign_in(); }, sign_in_id);
+    }
     menu.Append(manage_id, _L("Manage sources"));
     menu.Append(folder_id, _L("Show Online Models folder"));
     menu.Append(import_id, _L("Import downloaded file..."));
@@ -903,6 +948,7 @@ void OnlineModelsPanel::load_provider(size_t index)
         return;
 
     m_current_provider = index;
+    update_toolbar_for_width(GetClientSize().x);
     if (m_source_choice)
         m_source_choice->SetSelection(static_cast<int>(index));
     m_back_button->Enable(false);
@@ -950,6 +996,73 @@ void OnlineModelsPanel::on_show_download_folder()
     if (!ensure_download_dir())
         return;
     desktop_open_any_folder(Slic3r::online_models_download_dir().string());
+}
+
+void OnlineModelsPanel::on_makerworld_sign_in()
+{
+    if (m_sign_in_pending || m_current_provider >= m_providers.size())
+        return;
+    const std::string origin = makerworld_origin(m_providers[m_current_provider].homepage_url);
+    if (origin.empty())
+        return;
+    auto* agent = wxGetApp().getAgent();
+    if (!agent || !agent->get_cloud_agent(BBL_CLOUD_PROVIDER)) {
+        show_error(this, _L("Enable the Bambu networking plugin to sign in to MakerWorld with your Bambu account."));
+        return;
+    }
+    wxWeakRef<OnlineModelsPanel> self(this);
+    if (!agent->is_user_login(BBL_CLOUD_PROVIDER))
+        wxGetApp().ShowUserLogin(true, BBL_CLOUD_PROVIDER);
+    // The native login dialog queues its account update when it closes.
+    wxGetApp().CallAfter([self, origin] {
+        if (self && !wxGetApp().is_closing())
+            self->sign_in_to_makerworld(origin);
+    });
+}
+
+void OnlineModelsPanel::sign_in_to_makerworld(const std::string& origin)
+{
+    auto* agent = wxGetApp().getAgent();
+    auto cloud = agent ? agent->get_cloud_agent(BBL_CLOUD_PROVIDER) : nullptr;
+    if (!cloud || !cloud->is_user_login() || m_sign_in_pending || !wxGetApp().plater())
+        return;
+    const std::string user_id = cloud->get_user_id();
+    auto ticket = std::make_shared<std::string>();
+    wxWeakRef<OnlineModelsPanel> self(this);
+    m_sign_in_pending = true;
+    m_sign_in_button->Enable(false);
+    const bool queued = queue_job(wxGetApp().plater()->get_ui_job_worker(),
+        [cloud, ticket](Job::Ctl& ctl) {
+            if (!ctl.was_canceled() && cloud->request_bind_ticket(ticket.get()) != 0)
+                ticket->clear();
+        },
+        [self, cloud, ticket, origin, user_id](bool canceled, std::exception_ptr& error) {
+            const bool failed = bool(error) || ticket->empty();
+            error = nullptr;
+            if (!self || wxGetApp().is_closing())
+                return;
+            self->m_sign_in_pending = false;
+            self->m_sign_in_button->Enable(true);
+            if (canceled || !cloud->is_user_login() || cloud->get_user_id() != user_id)
+                return;
+            if (self->m_current_provider >= self->m_providers.size()
+                || makerworld_origin(self->m_providers[self->m_current_provider].homepage_url) != origin)
+                return;
+            if (failed) {
+                show_error(self.get(), _L("Could not sign in to MakerWorld with your Bambu account. Please try again."));
+                return;
+            }
+            // MakerWorld exchanges this ticket for its own session cookie. Do
+            // not post native access/refresh tokens to the model site's scripts.
+            const std::string url = origin + "api/sign-in/ticket?to=" + Http::url_encode(origin)
+                + "&ticket=" + Http::url_encode(*ticket);
+            self->m_browser->LoadURL(from_u8(url));
+        });
+    if (!queued) {
+        m_sign_in_pending = false;
+        m_sign_in_button->Enable(true);
+        show_error(this, _L("Could not start MakerWorld sign-in. Please try again."));
+    }
 }
 
 void OnlineModelsPanel::on_open_external()

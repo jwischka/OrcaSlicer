@@ -266,6 +266,14 @@ std::string BBLCloudServiceAgent::build_logout_cmd()
     return "";
 }
 
+int BBLCloudServiceAgent::request_bind_ticket(std::string* ticket)
+{
+    auto& plugin = BBLNetworkPlugin::instance();
+    auto agent = plugin.get_agent();
+    auto func = plugin.get_request_bind_ticket();
+    return func && agent ? func(agent, ticket) : -1;
+}
+
 std::string BBLCloudServiceAgent::build_login_info()
 {
     auto& plugin = BBLNetworkPlugin::instance();

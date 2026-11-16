@@ -57,7 +57,8 @@ public:
 class WebView
 {
 public:
-    static wxWebView *CreateWebView(wxWindow *parent, wxString const &url);
+    // External sites can retain the backend user agent instead of Bambu app mode.
+    static wxWebView *CreateWebView(wxWindow *parent, wxString const &url, bool use_app_user_agent = true);
 #if wxUSE_WEBVIEW_EDGE
     static bool CheckWebViewRuntime();
     static bool DownloadAndInstallWebViewRuntime();

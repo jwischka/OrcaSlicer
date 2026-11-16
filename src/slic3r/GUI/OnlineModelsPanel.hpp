@@ -55,6 +55,8 @@ private:
     void on_import_downloaded_file();
     void on_show_download_folder();
     void on_open_external();
+    void on_makerworld_sign_in();
+    void sign_in_to_makerworld(const std::string& origin);
     void initialize_downloads();
     std::optional<wxString> select_download_destination(const WebViewDownloadRequest& request);
     void on_download_started(const WebViewDownloadRequest& request, const WebViewDownloadUpdate& update);
@@ -79,6 +81,8 @@ private:
     Button*                                  m_show_folder_button { nullptr };
     Button*                                  m_import_button { nullptr };
     Button*                                  m_overflow_button { nullptr };
+    Button*                                  m_sign_in_button { nullptr };
+    bool                                     m_sign_in_pending { false };
     Button*                                  m_back_button { nullptr };
     Button*                                  m_forward_button { nullptr };
     std::vector<Button*>                     m_buttons;

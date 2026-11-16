@@ -147,6 +147,10 @@ public:
      */
     virtual std::string build_login_info() = 0;
 
+    // Obtain a short-lived ticket for the provider's supported web sign-in flow.
+    // Providers without web SSO return an error.
+    virtual int request_bind_ticket(std::string* /*ticket*/) { return -1; }
+
     // ========================================================================
     // Token Access (for dependent agents)
     // ========================================================================

@@ -483,7 +483,8 @@ static std::vector<wxWeakRef<wxWebView>> g_delay_webviews;
 class WebViewRef : public wxObjectRefData
 {
 public:
-    WebViewRef(wxWebView *webView) : m_webView(webView) {}
+    WebViewRef(wxWebView *webView, bool use_app_user_agent)
+        : m_webView(webView), m_use_app_user_agent(use_app_user_agent) {}
     ~WebViewRef() {
         auto iter = std::find(g_webviews.begin(), g_webviews.end(), m_webView);
         assert(iter != g_webviews.end());
@@ -491,6 +492,7 @@ public:
             g_webviews.erase(iter);
     }
     wxWebView *m_webView;
+    bool m_use_app_user_agent;
     // Guards against registering the "wx" handler twice (a duplicate throws on WKWebView).
     bool m_script_handler_added = false;
 };
@@ -517,7 +519,7 @@ static wxString linux_user_agent()
 }
 #endif
 
-wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
+wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url, bool use_app_user_agent)
 {
 #if wxUSE_WEBVIEW_EDGE
     // Check if a fixed version of edge is present in
@@ -550,7 +552,8 @@ wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
         wxString language_code = Slic3r::GUI::wxGetApp().current_language_code().BeforeFirst('_');
         language_code          = language_code.ToStdString();
 #ifdef __WIN32__
-        webView->SetUserAgent(wxString::Format("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        if (use_app_user_agent)
+            webView->SetUserAgent(wxString::Format("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36 Edg/107.0.1418.52 BBL-Slicer/v%s (%s) BBL-Language/%s",
                                                Slic3r::GUI::wxGetApp().get_bbl_client_version(), Slic3r::GUI::wxGetApp().dark_mode() ? "dark" : "light", language_code.mb_str()));
         webView->Create(parent, wxID_ANY, url2, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
@@ -570,9 +573,11 @@ wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
         }
         webView->Create(parent, wxID_ANY, url2, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
 #ifdef __linux__
-        webView->SetUserAgent(linux_user_agent());
+        if (use_app_user_agent)
+            webView->SetUserAgent(linux_user_agent());
 #else
-        webView->SetUserAgent(wxString::Format("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) BBL-Slicer/v%s (%s) BBL-Language/%s",
+        if (use_app_user_agent)
+            webView->SetUserAgent(wxString::Format("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) BBL-Slicer/v%s (%s) BBL-Language/%s",
                                                Slic3r::GUI::wxGetApp().get_bbl_client_version(), Slic3r::GUI::wxGetApp().dark_mode() ? "dark" : "light", language_code.mb_str()));
 #endif
 #endif
@@ -617,7 +622,7 @@ wxWebView* WebView::CreateWebView(wxWindow * parent, wxString const & url)
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": failed. Use fake web view.";
         webView = new FakeWebView;
     }
-    webView->SetRefData(new WebViewRef(webView));
+    webView->SetRefData(new WebViewRef(webView, use_app_user_agent));
     g_webviews.push_back(webView);
     return webView;
 }
@@ -748,6 +753,9 @@ void WebView::RecreateAll()
     wxString language_code = Slic3r::GUI::wxGetApp().current_language_code().BeforeFirst('_');
     language_code          = language_code.ToStdString();
     for (auto webView : g_webviews) {
+        const WebViewRef* ref = webview_ref(webView);
+        if (ref && !ref->m_use_app_user_agent)
+            continue;
 #ifdef __linux__
         webView->SetUserAgent(linux_user_agent());
 #else

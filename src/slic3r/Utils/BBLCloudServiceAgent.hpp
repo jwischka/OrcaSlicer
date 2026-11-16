@@ -50,6 +50,7 @@ public:
     std::string build_login_cmd() override;
     std::string build_logout_cmd() override;
     std::string build_login_info() override;
+    int request_bind_ticket(std::string* ticket) override;
 
     // Token Access (BBL manages tokens internally)
     std::string get_access_token() const override;

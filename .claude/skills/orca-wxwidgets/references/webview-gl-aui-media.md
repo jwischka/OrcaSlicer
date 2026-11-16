@@ -468,7 +468,10 @@ while Edge ignores the base URL and restores `SetPage` content itself.
 `WebView` (`src/slic3r/GUI/Widgets/WebView.hpp`, global namespace, static members only) is the
 sanctioned way to make and drive a browser.
 
-**`WebView::CreateWebView(parent, url)`:**
+**`WebView::CreateWebView(parent, url, use_app_user_agent = true)`:**
+- External model sites pass `false` to retain the backend's native user agent. This avoids
+  Bambu Studio app layouts that hide website navigation and expect native login messages.
+  `RecreateAll()` leaves those views alone, preserving the native user agent across theme changes.
 - On MSVC builds, an `edge_fixed/` folder next to the executable triggers
   `wxWebViewEdge::MSWSetBrowserExecutableDir`.
 - Normalises the URL (backslashes → `/` on Windows, then `wxURI(url).BuildURI()`); `WebView::LoadUrl`
