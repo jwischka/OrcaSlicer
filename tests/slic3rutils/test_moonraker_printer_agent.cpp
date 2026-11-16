@@ -28,6 +28,7 @@
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/ssl/stream_base.hpp>
+#include <boost/beast/core/buffers_to_string.hpp>
 #include <boost/beast/core/error.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/stream_traits.hpp>
@@ -97,6 +98,7 @@ class DiscoveryAgent : public MoonrakerPrinterAgent
 public:
     using MoonrakerPrinterAgent::MoonrakerPrinterAgent;
     using MoonrakerPrinterAgent::device_info;
+    using MoonrakerPrinterAgent::send_websocket_request;
     mutable unsigned fetch_count = 0;
 
 protected:
@@ -192,12 +194,14 @@ enum class Behavior {
     IgnoresClose,              // Reports Klippy disconnected, then never answers the close
     StallsObjectList,          // Never answers the stream's object list request
     StallsHttp,                // Never answers HTTP requests until released, then hangs up on them
+    JsonRpcError,              // Answers a one-shot request with a JSON-RPC error
 };
 
 class FakePrinter
 {
 public:
-    explicit FakePrinter(Behavior behavior, bool tls = false) : m_behavior(behavior), m_tls(tls)
+    explicit FakePrinter(Behavior behavior, bool tls = false, bool one_shot = false)
+        : m_behavior(behavior), m_tls(tls), m_one_shot(one_shot)
     {
         m_tls_context.use_certificate_chain(net::buffer(std::string_view(TEST_CERTIFICATE)));
         m_tls_context.use_private_key(net::buffer(std::string_view(TEST_PRIVATE_KEY)), ssl::context::pem);
@@ -327,12 +331,29 @@ private:
         websocket::stream<Stream> ws{std::move(stream)};
         ws.accept(request, ec);
         // Without its object list the stream never sends the subscribe request.
-        const int requests = m_behavior == Behavior::StallsObjectList ? 1 : 2;
+        const int requests = m_one_shot || m_behavior == Behavior::StallsObjectList ? 1 : 2;
+        nlohmann::json query;
         for (int i = 0; i < requests && !ec; ++i) {
             beast::flat_buffer message;
             ws.read(message, ec);
+            if (m_one_shot && !ec)
+                query = nlohmann::json::parse(beast::buffers_to_string(message.data()));
         }
-        if (!ec && (m_behavior == Behavior::AnswersPings || m_behavior == Behavior::Chatters || m_behavior == Behavior::HangsUp)) {
+        if (!ec && m_one_shot && (m_behavior == Behavior::AnswersPings || m_behavior == Behavior::IgnoresClose ||
+                                 m_behavior == Behavior::JsonRpcError)) {
+            // An unrelated notification must not be mistaken for the answer.
+            const std::string notification = R"({"jsonrpc":"2.0","method":"notify_status_update","params":[]})";
+            ws.write(net::buffer(notification), ec);
+            nlohmann::json reply{{"jsonrpc", "2.0"}, {"id", query["id"]}};
+            if (m_behavior == Behavior::JsonRpcError)
+                reply["error"] = {{"code", -32601}, {"message", "Unknown method"}};
+            else
+                reply["result"] = {{"state", "success"}};
+            const std::string text = reply.dump();
+            if (!ec)
+                ws.write(net::buffer(text), ec);
+        }
+        if (!ec && !m_one_shot && (m_behavior == Behavior::AnswersPings || m_behavior == Behavior::Chatters || m_behavior == Behavior::HangsUp)) {
             const std::string status =
                 nlohmann::json{{"jsonrpc", "2.0"}, {"id", 1}, {"result", {{"status", {{"print_stats", {{"state", "standby"}}}}}}}}.dump();
             ws.write(net::buffer(status), ec);
@@ -341,6 +362,7 @@ private:
             return;
 
         switch (m_behavior) {
+        case Behavior::JsonRpcError:
         case Behavior::AnswersPings:
         case Behavior::AnswersPingsWithoutStatus:
         case Behavior::Chatters:
@@ -480,6 +502,7 @@ private:
 
     const Behavior m_behavior;
     const bool m_tls;
+    const bool m_one_shot;
     ssl::context m_tls_context{ssl::context::tls_server};
     net::io_context m_accept_ioc;
     tcp::acceptor m_acceptor{m_accept_ioc, {net::ip::make_address("127.0.0.1"), 0}};
@@ -1120,4 +1143,72 @@ TEST_CASE("A mapped U1 upload starts only after its physical tool map is deliver
         CHECK_FALSE(errors.empty());
         CHECK(printer.script().empty());
     }
+}
+
+TEST_CASE("One-shot websocket requests receive their JSON-RPC answer over plain and TLS connections", "[MoonrakerPrinterAgent]")
+{
+    const bool tls = GENERATE(false, true);
+    const bool server_error = GENERATE(false, true);
+    FakePrinter printer(server_error ? Behavior::JsonRpcError : Behavior::AnswersPings, tls, true);
+    DiscoveryAgent agent("");
+    agent.device_info.base_url = printer.base_url();
+    nlohmann::json result;
+    std::string error;
+    const bool success = agent.send_websocket_request("test.request", {{"value", 1}}, 2s, result, error);
+    CHECK(success == !server_error);
+    if (server_error)
+        CHECK(error == "Unknown method");
+    else {
+        CHECK(error.empty());
+        CHECK(result == nlohmann::json{{"state", "success"}});
+    }
+}
+
+TEST_CASE("A websocket request's absolute deadline survives silence and unrelated notifications", "[MoonrakerPrinterAgent]")
+{
+    const bool tls = GENERATE(false, true);
+    const Behavior behavior = GENERATE(Behavior::SilentBeforeHandshake, Behavior::Silent, Behavior::Chatters);
+    FakePrinter printer(behavior, tls, true);
+    DiscoveryAgent agent("");
+    agent.device_info.base_url = printer.base_url();
+    nlohmann::json result;
+    std::string error;
+    auto request = std::async(std::launch::async, [&] {
+        return agent.send_websocket_request("test.request", nlohmann::json::object(), 150ms, result, error);
+    });
+    const auto state = request.wait_for(2s);
+    printer.release(); // Also unblocks a broken implementation, so failure cannot hang the suite.
+    CHECK(state == std::future_status::ready);
+    CHECK_FALSE(request.get());
+    CHECK(error.find("timed out") != std::string::npos);
+}
+
+TEST_CASE("An answered websocket request succeeds even when the peer ignores the closing handshake", "[MoonrakerPrinterAgent]")
+{
+    const bool tls = GENERATE(false, true);
+    FakePrinter printer(Behavior::IgnoresClose, tls, true);
+    DiscoveryAgent agent("");
+    agent.device_info.base_url = printer.base_url();
+    nlohmann::json result;
+    std::string error;
+    auto request = std::async(std::launch::async, [&] {
+        return agent.send_websocket_request("test.request", nlohmann::json::object(), 2s, result, error);
+    });
+    const auto state = request.wait_for(3s);
+    printer.release();
+    CHECK(state == std::future_status::ready);
+    CHECK(request.get());
+    CHECK(error.empty());
+}
+
+TEST_CASE("A disconnected websocket request fails without retrying", "[MoonrakerPrinterAgent]")
+{
+    const bool tls = GENERATE(false, true);
+    FakePrinter printer(Behavior::HangsUpWithoutAnswer, tls, true);
+    DiscoveryAgent agent("");
+    agent.device_info.base_url = printer.base_url();
+    nlohmann::json result;
+    std::string error;
+    CHECK_FALSE(agent.send_websocket_request("test.request", nlohmann::json::object(), 2s, result, error));
+    CHECK_FALSE(error.empty());
 }
