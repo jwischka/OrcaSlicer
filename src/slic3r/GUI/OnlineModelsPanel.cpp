@@ -472,6 +472,8 @@ void OnlineModelsPanel::create_ui()
     if (m_browser) {
         auto update_navigation = [this](wxWebViewEvent& event) {
             update_navigation_buttons();
+            // The enclosing Home panel has its own WebView handlers.
+            event.StopPropagation();
             event.Skip();
         };
         // Model sites use slicer protocol links for their "Open in Studio" action.

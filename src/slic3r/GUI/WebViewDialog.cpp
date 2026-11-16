@@ -468,7 +468,7 @@ void WebViewPanel::apply_cloud_layout(bool cloud_on)
         // kLeftNavWidth is in DIP: the web view's CSS px are DIP, so scale to physical pixels.
         m_browser->SetMinSize(cloud_on ? m_browser->FromDIP(wxSize(kLeftNavWidth, -1)) : wxDefaultSize);
     }
-    Layout();
+    m_home_page->Layout();
 }
 
 void WebViewPanel::load_cloud_url(const wxString& url)
@@ -1045,7 +1045,7 @@ void WebViewPanel::OnNavigationRequest(wxWebViewEvent& evt)
 void WebViewPanel::OnNavigationComplete(wxWebViewEvent& evt)
 {
     m_browser->Show();
-    Layout();
+    m_home_page->Layout();
     BOOST_LOG_TRIVIAL(trace) << __FUNCTION__ << ": " << WebView::RedactUrl(evt.GetURL()).ToUTF8().data();
     if (wxGetApp().get_mode() == comDevelop)
         wxLogMessage("%s", "Navigation complete; url='" + evt.GetURL() + "'");
