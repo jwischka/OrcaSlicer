@@ -1,4 +1,7 @@
 #include "WebView.hpp"
+
+#include <memory>
+#include <optional>
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/Utils/MacDarkMode.hpp"
 
@@ -22,6 +25,8 @@
 #include <WebView2.h>
 #include <Shellapi.h>
 #include <wrl.h>
+#include <wrl/client.h>
+#include <EventToken.h>
 #include <slic3r/Utils/Http.hpp>
 #elif defined __linux__
 #include <gtk/gtk.h>

@@ -1,5 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <boost/filesystem/path.hpp>
+#include <boost/filesystem/operations.hpp>
+#include <string>
+
 #include "libslic3r/OnlineModels.hpp"
 #include "libslic3r/Utils.hpp"
 

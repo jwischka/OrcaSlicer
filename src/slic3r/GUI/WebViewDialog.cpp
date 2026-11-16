@@ -1,5 +1,8 @@
 #include "WebViewDialog.hpp"
 
+#include <wx/bookctrl.h>
+#include <climits>
+
 #include "I18N.hpp"
 #include "slic3r/GUI/wxExtensions.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
