@@ -1,6 +1,7 @@
 #include "OnlineModelsPanel.hpp"
 
 #include "libslic3r/AppConfig.hpp"
+#include "libslic3r/Utils.hpp"
 #include "GUI.hpp"
 #include "GUI_App.hpp"
 #include "GUI_Utils.hpp"
@@ -457,11 +458,26 @@ void OnlineModelsPanel::create_ui()
             update_navigation_buttons();
             event.Skip();
         };
-        m_browser->Bind(wxEVT_WEBVIEW_NAVIGATING, update_navigation);
+        // Model sites use slicer protocol links for their "Open in Studio" action.
+        // Keep the download in this Orca instance instead of launching an OS handler.
+        auto handle_model_link = [](wxWebViewEvent& event) {
+            const std::string url = into_u8(event.GetURL());
+            if (!is_supported_open_protocol(url))
+                return false;
+            event.Veto();
+            wxGetApp().CallAfter([url] { wxGetApp().start_download(url); });
+            return true;
+        };
+        m_browser->Bind(wxEVT_WEBVIEW_NAVIGATING, [handle_model_link, update_navigation](wxWebViewEvent& event) {
+            if (!handle_model_link(event))
+                update_navigation(event);
+        });
         m_browser->Bind(wxEVT_WEBVIEW_NAVIGATED, update_navigation);
         m_browser->Bind(wxEVT_WEBVIEW_LOADED, update_navigation);
         m_browser->Bind(wxEVT_WEBVIEW_ERROR, update_navigation);
-        m_browser->Bind(wxEVT_WEBVIEW_NEWWINDOW, [this](wxWebViewEvent& event) {
+        m_browser->Bind(wxEVT_WEBVIEW_NEWWINDOW, [this, handle_model_link](wxWebViewEvent& event) {
+            if (handle_model_link(event))
+                return;
             const wxString url = event.GetURL();
             event.Veto();
             if (!url.empty() && is_safe_external_url(url))
