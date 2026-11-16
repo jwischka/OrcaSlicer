@@ -4,6 +4,7 @@
 #include "I18N.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
+#include "OnlineModelsPanel.hpp"
 #include "libslic3r_version.h"
 
 #include <boost/filesystem/path.hpp>
@@ -34,6 +35,7 @@
 #include <wx/string.h>
 #include <wx/timer.h>
 #include <wx/textctrl.h>
+#include <wx/simplebook.h>
 #include <wx/toolbar.h>
 #include <wx/textdlg.h>
 #include <wx/toplevel.h>
@@ -82,6 +84,7 @@ static json home_page_strings()
         {"plugin_not_detected", _u8L("Bambu Network plug-in not detected. Click <a>here</a> to install it.")},
         {"log_out", _u8L("Log Out")},
         {"recent", _u8L("Recent")},
+        {"online_models", _u8L("Online Models")},
         {"new_project", _u8L("New Project")},
         {"create_new_project", _u8L("Create new project")},
         {"open_project", _u8L("Open Project")},
@@ -101,6 +104,13 @@ static json home_page_strings()
 WebViewPanel::WebViewPanel(wxWindow *parent)
         : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
  {
+    m_pages = new wxSimplebook(this);
+    m_pages->Bind(wxEVT_BOOKCTRL_PAGE_CHANGED, [](wxBookCtrlEvent& event) {
+        event.StopPropagation();
+        event.Skip();
+    });
+    m_home_page = new wxPanel(m_pages);
+
     m_home_url = file_url_from_path(boost::filesystem::path(resources_dir()) / "web/homepage/index.html");
     wxString strlang = wxGetApp().current_language_code_safe();
     if (strlang != "")
@@ -112,32 +122,32 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
     // Create the button
     bSizer_toolbar = new wxBoxSizer(wxHORIZONTAL);
 
-    m_button_back = new wxButton(this, wxID_ANY, _L_CONTEXT("Back", "Navigation"), wxDefaultPosition, wxDefaultSize, 0);
+    m_button_back = new wxButton(m_home_page, wxID_ANY, _L_CONTEXT("Back", "Navigation"), wxDefaultPosition, wxDefaultSize, 0);
     m_button_back->Enable(false);
     bSizer_toolbar->Add(m_button_back, 0, wxALL, 5);
 
-    m_button_forward = new wxButton(this, wxID_ANY, _L("Forward"), wxDefaultPosition, wxDefaultSize, 0);
+    m_button_forward = new wxButton(m_home_page, wxID_ANY, _L("Forward"), wxDefaultPosition, wxDefaultSize, 0);
     m_button_forward->Enable(false);
     bSizer_toolbar->Add(m_button_forward, 0, wxALL, 5);
 
-    m_button_stop = new wxButton(this, wxID_ANY, _L("Stop"), wxDefaultPosition, wxDefaultSize, 0);
+    m_button_stop = new wxButton(m_home_page, wxID_ANY, _L("Stop"), wxDefaultPosition, wxDefaultSize, 0);
 
     bSizer_toolbar->Add(m_button_stop, 0, wxALL, 5);
 
-    m_button_reload = new wxButton(this, wxID_ANY, _L("Reload"), wxDefaultPosition, wxDefaultSize, 0);
+    m_button_reload = new wxButton(m_home_page, wxID_ANY, _L("Reload"), wxDefaultPosition, wxDefaultSize, 0);
     bSizer_toolbar->Add(m_button_reload, 0, wxALL, 5);
 
-    m_url = new wxTextCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_PROCESS_ENTER);
+    m_url = new wxTextCtrl(m_home_page, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxTE_PROCESS_ENTER);
     bSizer_toolbar->Add(m_url, 1, wxALL | wxEXPAND, 5);
 
-    m_button_tools = new wxButton(this, wxID_ANY, _L("Tools"), wxDefaultPosition, wxDefaultSize, 0);
+    m_button_tools = new wxButton(m_home_page, wxID_ANY, _L("Tools"), wxDefaultPosition, wxDefaultSize, 0);
     bSizer_toolbar->Add(m_button_tools, 0, wxALL, 5);
 
     topsizer->Add(bSizer_toolbar, 0, wxEXPAND, 0);
     bSizer_toolbar->Show(false);
 
     // Create panel for find toolbar.
-    wxPanel* panel = new wxPanel(this);
+    wxPanel* panel = new wxPanel(m_home_page);
     topsizer->Add(panel, wxSizerFlags().Expand());
 
     // Create sizer for panel.
@@ -145,18 +155,22 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
     panel->SetSizer(panel_sizer);
 #endif //BBL_RELEASE_TO_PUBLIC
     // Create the info panel
-    m_info = new wxInfoBar(this);
+    m_info = new wxInfoBar(m_home_page);
     topsizer->Add(m_info, wxSizerFlags().Expand());
     // Create the webview
     create_browser();
     m_reset_on_show = WebView::NeedsRecreateOnShow();
-    SetSizer(topsizer);
+    m_home_page->SetSizer(topsizer);
 
     // The homepage shell is the left nav column; when OrcaCloud opens, its page lives in a
     // second native pane beside it (the site refuses to be framed).
     m_content_sizer = new wxBoxSizer(wxHORIZONTAL);
     m_content_sizer->Add(m_browser, wxSizerFlags().Expand().Proportion(1));
     topsizer->Add(m_content_sizer, wxSizerFlags().Expand().Proportion(1));
+    m_pages->AddPage(m_home_page, wxEmptyString, true);
+    auto* root_sizer = new wxBoxSizer(wxVERTICAL);
+    root_sizer->Add(m_pages, 1, wxEXPAND);
+    SetSizer(root_sizer);
 
     // Log backend information
     /* m_browser->GetUserAgent() may lead crash
@@ -239,13 +253,13 @@ WebViewPanel::WebViewPanel(wxWindow *parent)
 #endif //BBL_RELEASE_TO_PUBLIC
 
     // Connect the webview events
-    Bind(wxEVT_WEBVIEW_NAVIGATING, &WebViewPanel::OnNavigationRequest, this);
-    Bind(wxEVT_WEBVIEW_NAVIGATED, &WebViewPanel::OnNavigationComplete, this);
-    Bind(wxEVT_WEBVIEW_LOADED, &WebViewPanel::OnDocumentLoaded, this);
-    Bind(wxEVT_WEBVIEW_TITLE_CHANGED, &WebViewPanel::OnTitleChanged, this);
-    Bind(wxEVT_WEBVIEW_ERROR, &WebViewPanel::OnError, this);
-    Bind(wxEVT_WEBVIEW_NEWWINDOW, &WebViewPanel::OnNewWindow, this);
-    Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &WebViewPanel::OnScriptMessage, this);
+    m_browser->Bind(wxEVT_WEBVIEW_NAVIGATING, &WebViewPanel::OnNavigationRequest, this);
+    m_browser->Bind(wxEVT_WEBVIEW_NAVIGATED, &WebViewPanel::OnNavigationComplete, this);
+    m_browser->Bind(wxEVT_WEBVIEW_LOADED, &WebViewPanel::OnDocumentLoaded, this);
+    m_browser->Bind(wxEVT_WEBVIEW_TITLE_CHANGED, &WebViewPanel::OnTitleChanged, this);
+    m_browser->Bind(wxEVT_WEBVIEW_ERROR, &WebViewPanel::OnError, this);
+    m_browser->Bind(wxEVT_WEBVIEW_NEWWINDOW, &WebViewPanel::OnNewWindow, this);
+    m_browser->Bind(wxEVT_WEBVIEW_SCRIPT_MESSAGE_RECEIVED, &WebViewPanel::OnScriptMessage, this);
     Bind(EVT_RESPONSE_MESSAGE, &WebViewPanel::OnScriptResponseMessage, this);
 
     // Connect the menu events
@@ -306,7 +320,7 @@ WebViewPanel::~WebViewPanel()
 void WebViewPanel::create_browser()
 {
     // Created empty and loaded after the strings are added, so the first load already has them.
-    m_browser = WebView::CreateWebView(this, wxEmptyString);
+    m_browser = WebView::CreateWebView(m_home_page, wxEmptyString);
     m_browser->AddUserScript(wxString::FromUTF8(WebViewHostDialog::localized_strings_script(home_page_strings())));
     WebView::LoadUrl(m_browser, m_home_url);
     m_browser->Hide();
@@ -316,7 +330,7 @@ void WebViewPanel::create_browser()
 // so its session and scroll position survive hiding.
 void WebViewPanel::create_cloud_browser()
 {
-    m_cloud_browser = WebView::CreateWebView(this, wxEmptyString);
+    m_cloud_browser = WebView::CreateWebView(m_home_page, wxEmptyString);
 
 #ifdef __linux__
     // The pane's web session is a cookie (guide §3), and WebKitGTK keeps cookies only in memory
@@ -607,6 +621,7 @@ bool WebViewPanel::Show(bool show)
 
 void WebViewPanel::load_url(wxString& url)
 {
+    show_home();
     this->Show();
     this->Raise();
     m_url->ChangeValue(url);
@@ -616,6 +631,41 @@ void WebViewPanel::load_url(wxString& url)
     m_browser->LoadURL(url);
     m_browser->SetFocus();
     UpdateState();
+}
+
+void WebViewPanel::show_home()
+{
+    if (!m_pages || !m_home_page)
+        return;
+    m_pages->SetSelection(m_pages->FindPage(m_home_page));
+    SendRecentList(INT_MAX);
+}
+
+void WebViewPanel::show_online_models()
+{
+    if (!m_pages)
+        return;
+    if (!m_online_models) {
+        m_online_models = new OnlineModelsPanel(m_pages, [this] { show_home(); });
+        m_pages->AddPage(m_online_models, wxEmptyString, false);
+    }
+    m_pages->SetSelection(m_pages->FindPage(m_online_models));
+    m_pages->Layout();
+    m_online_models->on_page_shown();
+    m_online_models->SetFocus();
+}
+
+void WebViewPanel::msw_rescale()
+{
+    if (m_online_models)
+        m_online_models->msw_rescale();
+    Layout();
+}
+
+void WebViewPanel::on_sys_color_changed()
+{
+    if (m_online_models)
+        m_online_models->on_sys_color_changed();
 }
 
 /**
@@ -935,8 +985,10 @@ int WebViewPanel::get_model_mall_detail_url(std::string *url, std::string id)
 
 void WebViewPanel::update_mode()
 {
-    GetSizer()->Show(size_t(0), wxGetApp().app_config->get("internal_developer_mode") == "true");
-    GetSizer()->Layout();
+#if !BBL_RELEASE_TO_PUBLIC
+    bSizer_toolbar->Show(wxGetApp().app_config->get("internal_developer_mode") == "true");
+    m_home_page->Layout();
+#endif
 }
 
 /**

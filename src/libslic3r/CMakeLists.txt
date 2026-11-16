@@ -390,6 +390,8 @@ set(lisbslic3r_sources
     ObjColorUtils.hpp
     ObjectID.cpp
     ObjectID.hpp
+    OnlineModels.cpp
+    OnlineModels.hpp
     Optimize/BruteforceOptimizer.hpp
     Optimize/NLoptOptimizer.hpp
     Optimize/Optimizer.hpp

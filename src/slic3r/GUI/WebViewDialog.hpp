@@ -34,6 +34,7 @@
 #include <wx/timer.h>
 #include "Lazy.hpp"
 
+class wxSimplebook;
 
 namespace Slic3r {
 
@@ -41,6 +42,7 @@ class NetworkAgent;
 
 namespace GUI {
 
+class OnlineModelsPanel;
 
 class WebViewPanel : public wxPanel, public LazyInstance<WebViewPanel>
 {
@@ -49,6 +51,10 @@ public:
     virtual ~WebViewPanel();
 
     void load_url(wxString& url);
+    void show_home();
+    void show_online_models();
+    void msw_rescale();
+    void on_sys_color_changed();
 
     void UpdateState();
     void OnIdle(wxIdleEvent& evt);
@@ -157,6 +163,10 @@ private:
     void clear_cloud_storage();
     // Re-applies the content sizer's proportions and min sizes for the cloud state.
     void apply_cloud_layout(bool cloud_on);
+
+    wxSimplebook*      m_pages { nullptr };
+    wxPanel*           m_home_page { nullptr };
+    OnlineModelsPanel* m_online_models { nullptr };
 
     wxWebView* m_browser;
     wxWebView* m_cloud_browser{nullptr};

@@ -67,6 +67,7 @@ add_executable(${_TEST_NAME}_tests
     test_obj.cpp
     test_painted_modifier.cpp
     test_step.cpp
+    test_online_models.cpp
     test_stl.cpp
     test_triangle_mesh_deal.cpp
     test_triangle_selector.cpp
