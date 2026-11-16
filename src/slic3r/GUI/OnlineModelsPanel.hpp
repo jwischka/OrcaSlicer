@@ -1,5 +1,9 @@
 #pragma once
 
+#include <string>
+#include <cstddef>
+#include <wx/string.h>
+
 #include <functional>
 #include <map>
 #include <memory>

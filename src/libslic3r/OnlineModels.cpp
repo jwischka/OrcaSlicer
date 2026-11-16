@@ -1,5 +1,17 @@
 #include "OnlineModels.hpp"
 
+#include <boost/algorithm/string/case_conv.hpp>
+#include <boost/algorithm/string/trim.hpp>
+#include <boost/algorithm/string/predicate.hpp>
+#include <boost/filesystem/path.hpp>
+#include <boost/filesystem/operations.hpp>
+#include <vector>
+#include <string>
+#include <iterator>
+#include <utility>
+#include <optional>
+#include <cstdint>
+
 #include "Utils.hpp"
 
 #include <boost/algorithm/string.hpp>

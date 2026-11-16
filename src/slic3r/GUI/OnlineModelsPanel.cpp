@@ -1,4 +1,20 @@
 #include "OnlineModelsPanel.hpp"
+#include <wx/panel.h>
+#include <functional>
+#include <wx/popupwin.h>
+#include <cstddef>
+#include <optional>
+#include <boost/filesystem/operations.hpp>
+#include <cstdint>
+
+#include <libslic3r/OnlineModels.hpp>
+#include <string>
+#include <vector>
+#include <wx/string.h>
+#include <wx/event.h>
+#include <wx/gdicmn.h>
+#include <wx/dialog.h>
+#include <wx/defs.h>
 
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/Utils.hpp"
@@ -734,7 +750,7 @@ void OnlineModelsPanel::on_download_started(const WebViewDownloadRequest& reques
         if (m_download_subscription)
             m_download_subscription->cancel(id);
     });
-    row->open->Bind(wxEVT_BUTTON, [this, row](wxCommandEvent&) {
+    row->open->Bind(wxEVT_BUTTON, [row](wxCommandEvent&) {
         wxArrayString paths;
         paths.Add(from_path(row->destination));
         wxGetApp().plater()->load_files(paths);
