@@ -11,7 +11,13 @@
 #include "slic3r/GUI/GUI_App.hpp"
 
 #include "nlohmann/json.hpp"
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/log/trivial.hpp>
+#include <chrono>
+#include <functional>
+#include <exception>
+#include <regex>
+#include <tuple>
 #include <vector>
 #include <string>
 #include "libslic3r/Preset.hpp"
@@ -36,29 +42,10 @@ std::string SnapmakerProtocol::start_script(const std::string& filename, const s
     // Klipper's quoted command arguments cannot contain a quote or a line break.
     if (filename.empty() || filename.find_first_of("\"\r\n") != std::string::npos)
         return {};
-    const auto map = nlohmann::json::parse(mapping, nullptr, false);
-    if (!map.is_array() || map.empty() || map.size() > 32)
-        return {};
-    auto table = nlohmann::json::array();
-    for (size_t i = 0; i < map.size(); ++i) {
-        if (!map[i].is_number_integer() || map[i] < 0 || map[i] > 4)
-            return {};
-        const int tool = map[i].get<int>();
-        if (tool > 0 || i < 4)
-            table.push_back({i, tool > 0 ? tool - 1 : static_cast<int>(i)});
-    }
+    const auto table = SnapmakerPrinterAgent::build_map_table(mapping);
     if (table.empty())
         return {};
     return "SDCARD_PRINT_FILE_WITH_PARAMETERS FILENAME=\"" + filename + "\" MAP_TABLE=\"" + table.dump() + "\"";
-}
-
-bool SnapmakerPrinterAgent::print_uploaded_file(const PrintParams& params, const std::string& filename)
-{
-    if (params.ams_mapping.empty())
-        return MoonrakerPrinterAgent::print_uploaded_file(params, filename);
-    const auto script = SnapmakerProtocol::start_script(filename, params.ams_mapping);
-    // A malformed mapping must never fall back to starting with the wrong tool.
-    return !script.empty() && send_gcode_sync(device_info.dev_id, script);
 }
 
 namespace {
@@ -492,6 +479,139 @@ bool SnapmakerPrinterAgent::fetch_filament_info(std::string dev_id, FilamentSync
 
     build_ams_payload(1, slot_count - 1, trays);
     return true;
+}
+
+bool SnapmakerPrinterAgent::firmware_supports_print_options(const std::string& firmware_version)
+{
+    // The U1 reports its firmware version as moonraker_version, read from /etc/VERSION
+    static const std::regex version_regex(R"(^\s*[vV]?(\d+)\.(\d+)(?:\.(\d+))?)");
+    std::smatch             match;
+    if (!std::regex_search(firmware_version, match, version_regex)) {
+        return false;
+    }
+    try {
+        const int major = std::stoi(match[1].str());
+        const int minor = std::stoi(match[2].str());
+        const int patch = match[3].matched ? std::stoi(match[3].str()) : 0;
+        return std::make_tuple(major, minor, patch) >= std::make_tuple(1, 3, 0);
+    } catch (const std::exception&) {
+        return false; // A component too large for an int
+    }
+}
+
+nlohmann::json SnapmakerPrinterAgent::build_map_table(const std::string& ams_mapping)
+{
+    const auto map = nlohmann::json::parse(ams_mapping, nullptr, false);
+    if (!map.is_array() || map.empty() || map.size() > 32)
+        return nlohmann::json::array();
+    auto table = nlohmann::json::array();
+    for (size_t i = 0; i < map.size(); ++i) {
+        if (!map[i].is_number_integer() || map[i] < 0 || map[i] > 4)
+            return nlohmann::json::array();
+        const int tool = map[i].get<int>();
+        if (tool > 0 || i < 4)
+            table.push_back({i, tool > 0 ? tool - 1 : static_cast<int>(i)});
+    }
+    return table;
+}
+
+nlohmann::json SnapmakerPrinterAgent::build_start_local_print_params(const PrintParams& params, const std::string& filename)
+{
+    // Moonraker turns each option into a parameter of SDCARD_PRINT_FILE_WITH_PARAMETERS, written with Python's str(),
+    // so a JSON true would arrive as "True", which the firmware's get_int() rejects. The switches are sent as 0 or 1.
+    nlohmann::json options{
+        {"bed_level", params.task_bed_leveling ? 1 : 0},
+        {"flow_calibrate", params.task_flow_cali ? 1 : 0},
+        {"time_lapse_camera", params.task_record_timelapse ? 1 : 0},
+    };
+    // Without a map_table the firmware prints each filament with the toolhead of the same number
+    nlohmann::json map_table = build_map_table(params.ams_mapping);
+    if (!map_table.empty()) {
+        options["map_table"] = std::move(map_table);
+    }
+
+    nlohmann::json request{{"path", filename}, {"options", std::move(options)}};
+    // The firmware prints Metadata/plate_<print_plate>.gcode from a 3MF, defaulting to plate 1
+    if (boost::iends_with(filename, ".3mf") && params.plate_index > 0) {
+        request["print_plate"] = params.plate_index;
+    }
+    return request;
+}
+
+bool SnapmakerPrinterAgent::init_device_info(const std::string& dev_id,
+                                             const std::string& dev_ip,
+                                             const std::string& username,
+                                             const std::string& password,
+                                             bool               use_ssl,
+                                             const std::string& port)
+{
+    // The base clears the firmware version here, so a newly selected printer starts without options until it reports one
+    print_options_supported.store(false);
+    return MoonrakerPrinterAgent::init_device_info(dev_id, dev_ip, username, password, use_ssl, port);
+}
+
+bool SnapmakerPrinterAgent::fetch_device_info(const std::string&           base_url,
+                                              const std::string&           api_key,
+                                              MoonrakerDeviceInfo&         info,
+                                              std::string&                 error,
+                                              const std::function<bool()>& cancelled) const
+{
+    if (!MoonrakerPrinterAgent::fetch_device_info(base_url, api_key, info, error, cancelled)) {
+        return false;
+    }
+    const bool supported = firmware_supports_print_options(info.version);
+    print_options_supported.store(supported);
+    BOOST_LOG_TRIVIAL(info) << "SnapmakerPrinterAgent: firmware " << info.version
+                            << (supported ? " applies print options" : " predates print options, prints start without them");
+    return true;
+}
+
+bool SnapmakerPrinterAgent::print_uploaded_file(const PrintParams& params, const std::string& filename)
+{
+    if (!print_options_supported.load()) {
+        if (params.ams_mapping.empty())
+            return MoonrakerPrinterAgent::print_uploaded_file(params, filename);
+        const auto script = SnapmakerProtocol::start_script(filename, params.ams_mapping);
+        return !script.empty() && send_gcode_sync(device_info.dev_id, script);
+    }
+    // Reject a malformed Prepare/Print mapping instead of silently starting on the wrong head.
+    if (!params.ams_mapping.empty() && build_map_table(params.ams_mapping).empty())
+        return false;
+
+    const nlohmann::json request_params = build_start_local_print_params(params, filename);
+    BOOST_LOG_TRIVIAL(info) << "SnapmakerPrinterAgent: server.files.start_local_print " << request_params.dump();
+
+    // Moonraker only serves this endpoint over its websocket and MQTT. It answers once the firmware has run its
+    // pre-print checks, so the wait matches the agent's other print starts.
+    nlohmann::json result;
+    std::string    error;
+    if (!send_websocket_request("server.files.start_local_print", request_params, std::chrono::seconds(60), result, error)) {
+        // Not retried with SDCARD_PRINT_FILE: after a timeout the print may already be starting
+        BOOST_LOG_TRIVIAL(error) << "SnapmakerPrinterAgent: start_local_print failed: " << error;
+        return false;
+    }
+    // The firmware reports its own failures, such as a nozzle mismatch, in the result rather than as a JSON-RPC error
+    const std::string state = result.is_object() ? result.value("state", std::string()) : std::string();
+    if (state != "success") {
+        const bool        has_message = result.is_object() && result.contains("message") && result["message"].is_string();
+        const std::string message     = has_message ? result["message"].get<std::string>() : result.dump();
+        BOOST_LOG_TRIVIAL(error) << "SnapmakerPrinterAgent: the printer refused the print: " << message;
+        return false;
+    }
+    return true;
+}
+
+void SnapmakerPrinterAgent::add_print_capabilities(nlohmann::json& print) const
+{
+    if (!print_options_supported.load()) {
+        return;
+    }
+    // Shows the flow calibration and timelapse options of the print dialog; bed leveling is shown by the base agent
+    print["support_flow_calibration"] = true;
+    print["support_timelapse"]        = true;
+    // The device model reads home_flag after support_flow_calibration, and its bit 16 overrides that flag
+    const int home_flag = print.contains("home_flag") && print["home_flag"].is_number_integer() ? print["home_flag"].get<int>() : 0;
+    print["home_flag"]  = home_flag | (1 << 16);
 }
 
 } // namespace Slic3r
