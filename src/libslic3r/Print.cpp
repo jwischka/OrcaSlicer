@@ -2510,7 +2510,22 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
         // spiral vase cannot print.
         const auto &is_mixed = m_config.filament_is_mixed.values;
         for (const PrintObject *object : m_objects) {
-            const auto used_filament_ids = object->object_extruders();
+            auto all_regions = object->all_regions();
+            auto used_filament_ids = object->object_extruders();
+            // Fully painted volumes print only their painted regions; the base filament stays empty.
+            const ModelVolumePtrs &volumes = object->model_object()->volumes;
+            if (object->shared_regions() && std::all_of(volumes.begin(), volumes.end(), [](const ModelVolume *volume) {
+                    return !volume->is_model_part() || volume->is_mm_painted_everywhere();
+                })) {
+                all_regions.clear();
+                used_filament_ids.clear();
+                for (const PrintObjectRegions::LayerRangeRegions &range : object->shared_regions()->layer_ranges)
+                    for (const PrintObjectRegions::PaintedRegion &painted : range.painted_regions) {
+                        all_regions.emplace_back(*painted.region);
+                        painted.region->collect_object_printing_extruders(*this, used_filament_ids);
+                    }
+                sort_remove_duplicates(used_filament_ids);
+            }
             if (used_filament_ids.size() > 1 ||
                 std::any_of(used_filament_ids.begin(), used_filament_ids.end(), [&is_mixed](unsigned int filament_id) {
                     return filament_id < is_mixed.size() && is_mixed[filament_id];
@@ -2519,7 +2534,7 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
             // Enabling spiral vase mode in the GUI resets these keys in the global config only, so an object,
             // part or height range can still override them. Layers with infill or more than one wall are
             // printed without spiralizing.
-            for (const PrintRegion &region : object->all_regions()) {
+            for (const PrintRegion &region : all_regions) {
                 const PrintRegionConfig &cfg = region.config();
                 const char *opt_key = cfg.sparse_infill_density.value > 0. ? "sparse_infill_density" :
                                       cfg.wall_loops.value > 1             ? "wall_loops" :
