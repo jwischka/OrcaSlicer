@@ -474,6 +474,15 @@ function OnClickOpenProject()
 	SendWXMessage( JSON.stringify(tSend) );		
 }
 
+function OnClickOnlineModels()
+{
+	var tSend={};
+	tSend['sequence_id']=Math.round(new Date() / 1000);
+	tSend['command']="homepage_online_models";
+
+	SendWXMessage( JSON.stringify(tSend) );
+}
+
 function OnOpenRecentFile( strPath )
 {
 	var tSend={};

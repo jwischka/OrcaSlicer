@@ -2792,6 +2792,7 @@ void MainFrame::on_dpi_changed(const wxRect& suggested_rect)
 #ifdef SLIC3R_CAD
     DesignPanel::when_built([](DesignPanel& design) { design.msw_rescale(); });
 #endif
+    WebViewPanel::when_built([](WebViewPanel& home) { home.msw_rescale(); });
 
     // BBS
 #if 0
@@ -2859,6 +2860,7 @@ void MainFrame::on_sys_color_changed()
 #ifdef SLIC3R_CAD
     DesignPanel::when_built([](DesignPanel& design) { design.on_sys_color_changed(); });
 #endif
+    WebViewPanel::when_built([](WebViewPanel& home) { home.on_sys_color_changed(); });
     // update Tabs
     for (auto tab : wxGetApp().tabs_list)
         tab->sys_color_changed();
