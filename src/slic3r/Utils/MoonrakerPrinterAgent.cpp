@@ -556,22 +556,62 @@ bool MoonrakerPrinterAgent::send_websocket_request(const std::string&        met
     const auto        deadline = std::chrono::steady_clock::now() + timeout;
 
     net::io_context ioc;
-    // Runs the exchange over a plain or TLS stream. Every step goes through run_until_done(), since synchronous Beast
-    // calls ignore the stream's deadline.
+    // Runs the exchange over a plain or TLS stream. Asynchronous operations let the request deadline
+    // cancel DNS, handshakes and I/O through this connection's io_context.
     const auto exchange = [&](auto& ws) -> bool {
         constexpr bool     secure = !std::is_same_v<std::decay_t<decltype(ws.next_layer())>, beast::tcp_stream>;
         beast::tcp_stream& stream = beast::get_lowest_layer(ws);
-        const auto         fail   = [&](const std::string& step, const beast::error_code& ec) {
-            error = step + ": " + (ec == beast::error::timeout ? std::string("timed out") : ec.message());
+        // Beast forbids TCP-stream timeouts underneath websocket operations. An independent timer
+        // bounds the whole request, including DNS and notifications that never answer its id.
+        stream.expires_never();
+        tcp::resolver resolver{ioc};
+        net::steady_timer timer{ioc};
+        struct DeadlineState {
+            unsigned generation = 0;
+            bool expired = false;
+        };
+        const auto timer_state = std::make_shared<DeadlineState>();
+        const auto arm_deadline = [&](std::chrono::steady_clock::time_point when) {
+            const unsigned generation = ++timer_state->generation;
+            timer_state->expired = false;
+            timer.expires_at(when);
+            timer.async_wait([timer_state, generation, &stream, &resolver](beast::error_code ec) {
+                if (ec || timer_state->generation != generation)
+                    return;
+                timer_state->expired = true;
+                resolver.cancel();
+                beast::error_code ignored;
+                stream.socket().close(ignored);
+            });
+        };
+        const ScopeGuard cancel_deadline([&] {
+            // A successful timer callback may already be queued when cancel() runs. Retire it
+            // before the stream/resolver disappear, even if cancellation cannot change its result.
+            ++timer_state->generation;
+            beast::error_code ignored;
+            timer.cancel(ignored);
+        });
+        const auto fail = [&](const std::string& step, const beast::error_code& ec) {
+            error = step + ": " + (timer_state->expired ? std::string("timed out") : ec.message());
             return false;
         };
-
-        tcp::resolver resolver{ioc};
-        if (const auto ec = connect_until_done(ioc, stream, resolver.resolve(endpoint.host, endpoint.port), std::chrono::seconds(5))) {
+        const auto run = [&](auto&& initiate) -> beast::error_code {
+            if (timer_state->expired)
+                return beast::error::timeout;
+            const auto ec = run_until_done(ioc, std::forward<decltype(initiate)>(initiate));
+            return timer_state->expired ? beast::error_code{beast::error::timeout} : ec;
+        };
+        arm_deadline(deadline);
+        tcp::resolver::results_type addresses;
+        if (const auto ec = run([&](auto handler) {
+                resolver.async_resolve(endpoint.host, endpoint.port, [&, handler](beast::error_code ec, tcp::resolver::results_type result) {
+                    addresses = std::move(result);
+                    handler(ec);
+                });
+            }))
+            return fail("resolve", ec);
+        if (const auto ec = run([&](auto handler) { net::async_connect(stream.socket(), addresses, handler); }))
             return fail("connect", ec);
-        }
-        // One deadline covers the handshakes, the request and the wait for its answer
-        stream.expires_at(deadline);
         if constexpr (secure) {
             // Server name indication carries a host name only, never an address
             beast::error_code not_address;
@@ -580,7 +620,7 @@ bool MoonrakerPrinterAgent::send_websocket_request(const std::string&        met
                 error = "TLS server name rejected";
                 return false;
             }
-            if (const auto ec = run_until_done(ioc, [&](auto&& handler) { ws.next_layer().async_handshake(ssl::stream_base::client, handler); })) {
+            if (const auto ec = run([&](auto&& handler) { ws.next_layer().async_handshake(ssl::stream_base::client, handler); })) {
                 return fail("TLS handshake", ec);
             }
         }
@@ -594,11 +634,11 @@ bool MoonrakerPrinterAgent::send_websocket_request(const std::string&        met
         if (!endpoint.port.empty() && endpoint.port != (secure ? "443" : "80")) {
             host_header += ":" + endpoint.port;
         }
-        if (const auto ec = run_until_done(ioc, [&](auto&& handler) { ws.async_handshake(host_header, endpoint.target, handler); })) {
+        if (const auto ec = run([&](auto&& handler) { ws.async_handshake(host_header, endpoint.target, handler); })) {
             return fail("websocket handshake", ec);
         }
         ws.text(true);
-        if (const auto ec = run_until_done(ioc, [&](auto&& handler) { ws.async_write(net::buffer(request), handler); })) {
+        if (const auto ec = run([&](auto&& handler) { ws.async_write(net::buffer(request), handler); })) {
             return fail("send", ec);
         }
 
@@ -606,7 +646,7 @@ bool MoonrakerPrinterAgent::send_websocket_request(const std::string&        met
         bool answered = false;
         while (!answered) {
             beast::flat_buffer buffer;
-            if (const auto ec = run_until_done(ioc, [&](auto&& handler) { ws.async_read(buffer, handler); })) {
+            if (const auto ec = run([&](auto&& handler) { ws.async_read(buffer, handler); })) {
                 return fail("waiting for the answer", ec);
             }
             const auto message = nlohmann::json::parse(beast::buffers_to_string(buffer.data()), nullptr, false);
@@ -624,8 +664,8 @@ bool MoonrakerPrinterAgent::send_websocket_request(const std::string&        met
         }
 
         // The answer is in, so a close that fails or times out changes nothing
-        stream.expires_after(std::chrono::seconds(1));
-        run_until_done(ioc, [&](auto&& handler) { ws.async_close(websocket::close_code::normal, handler); });
+        arm_deadline(std::chrono::steady_clock::now() + std::chrono::seconds(1));
+        run([&](auto&& handler) { ws.async_close(websocket::close_code::normal, handler); });
         return error.empty();
     };
 
