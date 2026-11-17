@@ -2428,18 +2428,15 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
         // spiral vase cannot print.
         const auto &is_mixed = m_config.filament_is_mixed.values;
         for (const PrintObject *object : m_objects) {
-            auto all_regions = object->all_regions();
             auto used_filament_ids = object->object_extruders();
             // Fully painted volumes print only their painted regions; the base filament stays empty.
             const ModelVolumePtrs &volumes = object->model_object()->volumes;
             if (object->shared_regions() && std::all_of(volumes.begin(), volumes.end(), [](const ModelVolume *volume) {
                     return !volume->is_model_part() || volume->is_mm_painted_everywhere();
                 })) {
-                all_regions.clear();
                 used_filament_ids.clear();
                 for (const PrintObjectRegions::LayerRangeRegions &range : object->shared_regions()->layer_ranges)
                     for (const PrintObjectRegions::PaintedRegion &painted : range.painted_regions) {
-                        all_regions.emplace_back(*painted.region);
                         painted.region->collect_object_printing_extruders(*this, used_filament_ids);
                     }
                 sort_remove_duplicates(used_filament_ids);
@@ -2449,26 +2446,6 @@ StringObjectException Print::validate(std::vector<StringObjectException> *warnin
                     return filament_id < is_mixed.size() && is_mixed[filament_id];
                 }))
                 return {L("Spiral (vase) mode does not work when an object contains more than one material."), nullptr, "spiral_mode"};
-<<<<<<< HEAD
-=======
-            // Enabling spiral vase mode in the GUI resets these keys in the global config only, so an object,
-            // part or height range can still override them. Layers with infill or more than one wall are
-            // printed without spiralizing.
-            for (const PrintRegion &region : all_regions) {
-                const PrintRegionConfig &cfg = region.config();
-                const char *opt_key = cfg.sparse_infill_density.value > 0. ? "sparse_infill_density" :
-                                      cfg.wall_loops.value > 1             ? "wall_loops" :
-                                      cfg.top_shell_layers.value > 0       ? "top_shell_layers" : nullptr;
-                if (opt_key != nullptr) {
-                    // TRN %1% is the object name.
-                    warn(Slic3r::format(_u8L("Spiral vase mode needs no sparse infill, one wall loop and no top shell layers, "
-                                             "but the object %1% uses other values, so it will not print as a continuous spiral."),
-                                        object->model_object()->name),
-                         opt_key, object);
-                    break;
-                }
-            }
->>>>>>> 8bcb64e3b8 (Allow spiral vase on a model painted all over with one filament (#17073))
         }
     }
 
