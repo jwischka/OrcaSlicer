@@ -24,7 +24,7 @@ jobs:
   build:
     uses: ./.github/workflows/build_check_cache.yml
     with:
-      os: macos-15
+      os: macos-26
       arch: ${{ inputs.architecture || 'arm64' }}
 
   tests:
@@ -32,14 +32,14 @@ jobs:
     if: ${{ (inputs.architecture || 'arm64') == 'arm64' }}
     uses: ./.github/workflows/unit_tests.yml
     with:
-      os: macos-15
+      os: macos-26
       artifact: ${{ github.sha }}-tests-macos-arm64
       test-dir: build/arm64/tests
 
   package:
     needs: [build, tests]
     if: ${{ !cancelled() && needs.build.result == 'success' && (needs.tests.result == 'success' || needs.tests.result == 'skipped') }}
-    runs-on: macos-15
+    runs-on: macos-26
     env:
       ARCH: ${{ inputs.architecture || 'arm64' }}
     steps:
@@ -65,7 +65,7 @@ jobs:
           while IFS= read -r binary; do
             codesign --force --sign - "$binary"
           done < <(find "$app" -type f -print0 | xargs -0 file --no-pad --mime-type -- |
-            grep ': application/x-mach-binary$' | sed 's|: application/x-mach-binary$||')
+            grep -v ' (for architecture ' | grep ': application/x-mach-binary$' | sed 's|: application/x-mach-binary$||')
           codesign --force --sign - "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           "$app/Contents/MacOS/OrcaSlicer" --help > output/command-line-check.txt
