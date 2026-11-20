@@ -1,0 +1,77 @@
+name: Package existing custom macOS build
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run:
+        description: Custom macOS build run ID (blank uses latest on this branch)
+        type: string
+        default: ''
+  push:
+    branches: [custom/2.5.1-u1-browser]
+    paths: [.github/workflows/custom_macos_package.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  package:
+    # Signing and DMG creation do not execute the app, so an Intel runner can
+    # package ARM64 when GitHub's Apple Silicon runner pool is unavailable.
+    runs-on: macos-26-intel
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      ARCH: arm64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+          sparse-checkout: scripts
+      - name: Download compiled app
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$SOURCE_RUN" ]]; then
+            SOURCE_RUN="$(gh run list --workflow custom_macos.yml --branch "$GITHUB_REF_NAME" --limit 1 --json databaseId --jq '.[0].databaseId')"
+          fi
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ ]]
+          source_sha="$(gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN" --jq '.head_sha')"
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          gh run download "$SOURCE_RUN" --name "OrcaSlicer_Mac_bundle_${ARCH}_${source_sha}" --dir bundle
+          echo "SOURCE_SHA=$source_sha" >> "$GITHUB_ENV"
+          echo "BUILD_RUN=$SOURCE_RUN" >> "$GITHUB_ENV"
+      - name: Sign and package existing app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p unpacked distribution output
+          tar -xzf "bundle/OrcaSlicer_Mac_bundle_${ARCH}_${SOURCE_SHA}.tar.gz" -C unpacked
+          app="distribution/OrcaSlicer Custom 2.5.1.app"
+          mv unpacked/OrcaSlicer/OrcaSlicer.app "$app"
+          test "$(lipo -archs "$app/Contents/MacOS/OrcaSlicer")" = "$ARCH"
+          while IFS= read -r binary; do
+            codesign --force --sign - "$binary"
+          done < <(find "$app" -type f -print0 | xargs -0 file --no-pad --mime-type -- |
+            grep -v ' (for architecture ' | grep ': application/x-mach-binary$' | sed 's|: application/x-mach-binary$||')
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          printf 'Base: v2.5.1\nSource: %s\nArchitecture: %s\nBuild run: %s\nSigning: ad-hoc, not Apple-notarized\nNative execution: not checked by this packaging-only job; see source build tests\n' "$SOURCE_SHA" "$ARCH" "$BUILD_RUN" > output/BUILD.txt
+          ln -s /Applications distribution/Applications
+          source scripts/retry.sh
+          source scripts/create_dmg.sh
+          create_dmg 'OrcaSlicer Custom 2.5.1' distribution "output/OrcaSlicer-Custom-2.5.1-macOS-${ARCH}.dmg"
+          (cd output && shasum -a 256 *.dmg > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: OrcaSlicer-Custom-2.5.1-macOS-arm64
+          path: output/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Installation summary
+        run: |
+          echo 'Download the DMG artifact and drag OrcaSlicer Custom 2.5.1 into Applications.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This packaging job checks architecture and code signatures; it does not run the ARM64 app or its tests on the Intel host.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This custom build is ad-hoc signed, not Apple-notarized.' >> "$GITHUB_STEP_SUMMARY"
