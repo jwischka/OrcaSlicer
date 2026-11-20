@@ -1,0 +1,87 @@
+name: Custom macOS 2.5.1
+
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: Mac architecture
+        type: choice
+        options: [arm64, x86_64]
+        default: arm64
+  push:
+    branches: [custom/2.5.1-u1-browser]
+    paths: [.github/workflows/custom_macos.yml]
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: custom-macos-${{ github.ref }}-${{ inputs.architecture || 'arm64' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: macos-15
+      arch: ${{ inputs.architecture || 'arm64' }}
+
+  tests:
+    needs: build
+    if: ${{ (inputs.architecture || 'arm64') == 'arm64' }}
+    uses: ./.github/workflows/unit_tests.yml
+    with:
+      os: macos-15
+      artifact: ${{ github.sha }}-tests-macos-arm64
+      test-dir: build/arm64/tests
+
+  package:
+    needs: [build, tests]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.tests.result == 'success' || needs.tests.result == 'skipped') }}
+    runs-on: macos-15
+    env:
+      ARCH: ${{ inputs.architecture || 'arm64' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          lfs: false
+          sparse-checkout: scripts
+      - uses: actions/download-artifact@v8
+        with:
+          name: OrcaSlicer_Mac_bundle_${{ env.ARCH }}_${{ github.sha }}
+          path: bundle
+      - name: Verify and package custom app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p unpacked distribution output
+          tar -xzf "bundle/OrcaSlicer_Mac_bundle_${ARCH}_${GITHUB_SHA}.tar.gz" -C unpacked
+          app="distribution/OrcaSlicer Custom 2.5.1.app"
+          mv unpacked/OrcaSlicer/OrcaSlicer.app "$app"
+          test "$(lipo -archs "$app/Contents/MacOS/OrcaSlicer")" = "$ARCH"
+          # Ad-hoc signatures keep the locally built ARM64 code valid. This
+          # personal build is not Apple-notarized and uses no signing secrets.
+          while IFS= read -r binary; do
+            codesign --force --sign - "$binary"
+          done < <(find "$app" -type f -print0 | xargs -0 file --no-pad --mime-type -- |
+            grep ': application/x-mach-binary$' | sed 's|: application/x-mach-binary$||')
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          "$app/Contents/MacOS/OrcaSlicer" --help > output/command-line-check.txt
+          printf 'Base: v2.5.1\nSource: %s\nArchitecture: %s\n' "$GITHUB_SHA" "$ARCH" > output/BUILD.txt
+          ln -s /Applications distribution/Applications
+          source scripts/retry.sh
+          source scripts/create_dmg.sh
+          create_dmg 'OrcaSlicer Custom 2.5.1' distribution "output/OrcaSlicer-Custom-2.5.1-macOS-${ARCH}.dmg"
+          (cd output && shasum -a 256 *.dmg > SHA256SUMS.txt)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: OrcaSlicer-Custom-2.5.1-macOS-${{ env.ARCH }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Installation summary
+        run: |
+          echo 'Download the DMG artifact, open it, and drag OrcaSlicer Custom 2.5.1 into Applications.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This custom build is not Apple-notarized. If macOS blocks it, use System Settings > Privacy & Security > Open Anyway after attempting to open it.' >> "$GITHUB_STEP_SUMMARY"
